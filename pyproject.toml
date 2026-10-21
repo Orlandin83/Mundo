@@ -8,4 +8,5 @@ dependencies = [
     "numpy>=2.5.4",
     "pandas>=3.0.6",
     "python-bcb>=0.4.0",
+    "typing-extensions>=4.16.0",
 ]
