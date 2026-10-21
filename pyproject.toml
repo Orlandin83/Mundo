@@ -3,5 +3,9 @@ name = "mundo"
 version = "0.1.0"
 requires-python = ">=3.15"
 dependencies = [
+    "fredapi>=0.5.2",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pandas>=3.0.6",
     "python-bcb>=0.4.0",
 ]
