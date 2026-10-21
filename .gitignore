@@ -1,4 +1,11 @@
-config_local.py
 .venv/
+venv/
+env/
 __pycache__/
-*.py[cod]
+*.pyc
+.vscode/
+.DS_Store
+build/
+dist/
+*.exe
+*.app

@@ -1,0 +1,5 @@
+python-bcb
+matplotlib
+fredapi
+pandas
+numpy
