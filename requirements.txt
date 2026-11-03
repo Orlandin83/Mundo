@@ -3,3 +3,4 @@ matplotlib
 fredapi
 pandas
 numpy
+requests
