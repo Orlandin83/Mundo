@@ -1,4 +1,9 @@
-"""Inflação em 12 meses e juros no último mês comum: BIS, ABS e BCRA.
+"""Matriz fiscal e regressões de juros reais do G20.
+
+Execute: python juros_divida.py
+A matriz usa escores Z: zero é a média dos países em cada indicador.
+
+Inflação em 12 meses e juros no último mês comum: BIS, ABS e BCRA.
 
 Fontes públicas, sem chave:
 https://data.bis.org/topics/CBPOL
@@ -26,6 +31,10 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+
+GRUPO = "G20"
+ARQUIVO_MATRIZ = "juros_divida_matriz_g20.png"
+ARQUIVO_REGRESSAO = "juros_divida_regressao_g20.png"
 
 API_URL = "https://www.imf.org/external/datamapper/api/v1"
 INDICADORES = {
@@ -263,7 +272,7 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
     Sem observações disponíveis, a média fica ausente (NaN).
     Déficit = -saldo primário: superávits entram como valores negativos.
     Anos encerrados ainda podem conter estimativas revisáveis do FMI.
-    Escores Z e índice de pressão fiscal são adimensionais.
+    Escores Z são adimensionais.
     Juros e inflação usam o último mês comum a todos os países, independentemente
     do ano fiscal escolhido; datas/fontes em attrs['fontes_juros_inflacao'].
     Documentação: https://www.imf.org/external/datamapper/api/
@@ -315,11 +324,6 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
     resultado["z_deficit_primario"] = normalizar_z(
         resultado["media_deficit_primario_pib"]
     )
-    # A soma preserva NaN quando falta qualquer um dos componentes.
-    resultado["indice_pressao_fiscal"] = (
-        0.5 * resultado["z_divida_pib"]
-        + 0.5 * resultado["z_deficit_primario"]
-    )
     resultado.attrs["fontes"] = fontes
     resultado.attrs["ano_fiscal"] = ano_referencia
     resultado.attrs["unidades"] = {
@@ -327,7 +331,6 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
         "media_deficit_primario_pib": "% do PIB",
         "z_divida_pib": "adimensional",
         "z_deficit_primario": "adimensional",
-        "indice_pressao_fiscal": "adimensional",
     }
     if incluir_juros:
         dados_juros, fontes_juros = consultar_juros_inflacao(g20)
@@ -345,7 +348,8 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
         "pais": "país",
         "media_deficit_primario_pib": "déficit primário (média)",
         "divida_pib": "dívida/pib",
-        "indice_pressao_fiscal": "ipf",
+        "z_divida_pib": "z_divida_pib",
+        "z_deficit_primario": "z_deficit_primario",
         "juro_real_ex_post": "juro real",
     }
     # Mantém o mesmo formato quando a consulta de juros é desativada.
@@ -355,7 +359,8 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
     resultado.attrs["unidades"] = {
         "déficit primário (média)": "% do PIB",
         "dívida/pib": "% do PIB",
-        "ipf": "adimensional",
+        "z_divida_pib": "adimensional",
+        "z_deficit_primario": "adimensional",
         "juro real": "% a.a., aproximação com inflação passada",
     }
     return resultado
@@ -363,21 +368,20 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
 
 # %% Regressões — padrão visual de superquarta.py
 def gerar_graficos_regressao(df, arquivo=None):
-    """Três regressões OLS com intercepto; juro real é a variável dependente."""
+    """Duas regressões OLS com intercepto; juro real é a variável dependente."""
     from matplotlib.transforms import Bbox
 
     if arquivo is None:
-        arquivo = Path(__file__).with_name("juros_divida_regressoes.png")
+        arquivo = Path(__file__).with_name(ARQUIVO_REGRESSAO)
     paineis = [
         ("déficit primário (média)", "Juro real × déficit primário médio", "Déficit primário médio (% do PIB)"),
         ("dívida/pib", "Juro real × dívida / PIB", "Dívida / PIB (%)"),
-        ("ipf", "Juro real × IPF", "Índice de pressão fiscal (IPF)"),
     ]
-    fig, axes = plt.subplots(nrows=3, figsize=(17, 14))
+    fig, axes = plt.subplots(nrows=2, figsize=(17, 11))
     fig.subplots_adjust(left=0.075, right=0.77, bottom=0.17, top=0.87, hspace=0.65)
     periodo = df.attrs.get("periodo_comum", "não informado")
     ano = df.attrs.get("ano_fiscal", ANO_REFERENCIA)
-    fig.suptitle("Juro real e pressão fiscal | G20", x=0.075, y=0.97,
+    fig.suptitle(f"Juros_Dívida Regressão {GRUPO}", x=0.075, y=0.97,
                  ha="left", fontsize=22, fontweight="bold", color="darkblue")
     fig.text(0.075, 0.935,
              f"Juros e inflação: {periodo}  •  Dívida/PIB: {ano}  •  Déficit médio: {ano - 9}–{ano}",
@@ -448,7 +452,7 @@ def gerar_graficos_regressao(df, arquivo=None):
     fig.text(0.075, 0.079,
              "Argentina: usa TAMAR privada efetiva anual como proxy dos juros, em lugar da taxa básica; aplica-se a mesma fórmula de juro real.", fontsize=9)
     fig.text(0.075, 0.053,
-             "IPF = 0,5 × Z(déficit primário médio) + 0,5 × Z(dívida/PIB); escores Z calculados entre os países, com desvio-padrão populacional.", fontsize=9)
+             "Déficit primário médio: média dos anos disponíveis na janela de dez anos; déficit = −saldo primário.", fontsize=9)
     fig.text(0.075, 0.027,
              "Juro real = 100 × [(1 + juros/100) / (1 + inflação em 12 meses/100) − 1]. Regressões descritivas entre países, incluindo a Argentina.",
              fontsize=9, color="dimgray")
@@ -456,14 +460,154 @@ def gerar_graficos_regressao(df, arquivo=None):
     return fig, pd.DataFrame(estatisticas)
 
 
-# %% Executar (também disponível como célula no editor)
+# %% Matriz fiscal — quatro quadrantes
+def escalar_areas_juros(juros, area_min=45.0, area_max=450.0):
+    """Área em pontos², linear entre os juros mínimo e máximo disponíveis.
+
+    Preserva a ordem inclusive para juros negativos. Ausentes ficam NaN;
+    quando todos os juros são iguais, usa a área intermediária.
+    """
+    juros = pd.to_numeric(juros, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    minimo, maximo = juros.min(), juros.max()
+    if minimo == maximo:
+        return juros.where(juros.isna(), (area_min + area_max) / 2)
+    return area_min + (juros - minimo) / (maximo - minimo) * (area_max - area_min)
+
+
+def gerar_grafico_matriz(df, arquivo=None):
+    """Dispersão nos escores Z originais, sem deslocar os pontos.
+
+    Os sinais comparam cada indicador à média do grupo, não a zero % do PIB.
+    Valores sobre os eixos estão na média e não pertencem a um quadrante.
+    """
+    from matplotlib.transforms import Bbox
+    from matplotlib.patches import Rectangle
+
+    arquivo = arquivo or Path(__file__).with_name(ARQUIVO_MATRIZ)
+    xcol, ycol = "z_divida_pib", "z_deficit_primario"
+    dados = df[["país", xcol, ycol]].replace([np.inf, -np.inf], np.nan).dropna()
+    dados["juro real"] = pd.to_numeric(
+        df.reindex(dados.index).get("juro real", pd.Series(index=dados.index, dtype=float)),
+        errors="coerce",
+    ).replace([np.inf, -np.inf], np.nan)
+    dados["area"] = escalar_areas_juros(dados["juro real"])
+    if dados.empty:
+        raise ValueError("Não há países com os dois indicadores normalizados disponíveis.")
+    omitidos = len(df) - len(dados)
+    limite = max(1.0, float(dados[[xcol, ycol]].abs().max().max()) * 1.30)
+    # Faixas exclusivas para cabeçalho, legenda, eixos e notas de rodapé.
+    fig, ax = plt.subplots(figsize=(14, 14), layout="none")
+    fig.subplots_adjust(left=0.10, right=0.94, bottom=0.29, top=0.80)
+    ano = df.attrs.get("ano_fiscal", ANO_REFERENCIA)
+    fig.suptitle(f"Juros_Dívida Matriz {GRUPO}", x=0.10, y=0.975, ha="left", va="top",
+                 fontsize=23, fontweight="bold", color="darkblue")
+    fig.text(0.10, 0.925,
+             f"Dívida/PIB: {ano}  •  Déficit primário médio: {ano - 9}–{ano}  •  {len(dados)} países",
+             fontsize=11, color="dimgray", va="top")
+    quadrantes = [
+        (-limite, 0, "#fff0d1", "I. Dívida < média\ne Déficit > média", 0.02, 0.98, "left", "top"),
+        (0, 0, "#f7dddd", "II. Dívida > média\ne Déficit > média", 0.98, 0.98, "right", "top"),
+        (0, -limite, "#e0eaf6", "III. Dívida > média\ne Déficit < média", 0.98, 0.02, "right", "bottom"),
+        (-limite, -limite, "#dff0e5", "IV. Dívida < média\ne Déficit < média", 0.02, 0.02, "left", "bottom"),
+    ]
+    titulos = []
+    for x, y, cor, titulo, tx, ty, ha, va in quadrantes:
+        ax.add_patch(Rectangle((x, y), limite, limite, color=cor, zorder=0))
+        titulos.append(ax.text(tx, ty, titulo, transform=ax.transAxes,
+                               ha=ha, va=va, fontsize=10, color="#344054",
+                               fontweight="bold"))
+    ax.axhline(0, color="#475467", linewidth=1.4)
+    ax.axvline(0, color="#475467", linewidth=1.4)
+    ax.set(xlim=(-limite, limite), ylim=(-limite, limite),
+           xlabel="Dívida / PIB normalizada (escore Z)",
+           ylabel="Déficit primário médio normalizado (escore Z)")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(alpha=0.18, zorder=0)
+    com_juros = dados.loc[dados["area"].notna()]
+    sem_juros = dados.loc[dados["area"].isna()]
+    from matplotlib.colors import to_rgba
+
+    cores = [to_rgba("#f4c542", 0.95) if pais == "Brasil"
+             else to_rgba("darkblue", 0.35) for pais in com_juros["país"]]
+    ax.scatter(com_juros[xcol], com_juros[ycol], s=com_juros["area"], c=cores,
+               edgecolor=to_rgba("#667085", 0.5), linewidth=0.8, zorder=3)
+    ax.scatter(sem_juros[xcol], sem_juros[ycol], s=55, marker="x", color="#667085", zorder=3)
+    periodo = df.attrs.get("periodo_comum", "não informado")
+    fig.text(0.10, 0.89, f"Juro real (% a.a.) · {periodo}",
+             fontsize=11, color="dimgray", va="top")
+    if not sem_juros.empty:
+        fig.text(0.10, 0.86, "× País sem juro real disponível", fontsize=9, color="dimgray", va="top")
+    fig.text(0.50, 0.23,
+             f"Dívida/PIB de {ano}; déficit primário = média de {ano - 9} a {ano}.",
+             fontsize=10, fontweight="bold", color="darkblue", va="top", ha="center")
+    fig.text(0.50, 0.205, "Quanto maior o círculo, maior o juro real do país.",
+             fontsize=10, fontweight="bold", color="darkblue", va="top", ha="center")
+
+    # Ajusta apenas os rótulos: as coordenadas dos países permanecem exatas.
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    ocupados = [t.get_window_extent(renderer) for t in titulos]
+    for (px, py), area in zip(ax.transData.transform(dados[[xcol, ycol]].to_numpy()),
+                              dados["area"].fillna(55)):
+        raio = np.sqrt(area) / 2 * fig.dpi / 72 + 3
+        ocupados.append(Bbox.from_bounds(px - raio, py - raio, 2 * raio, 2 * raio))
+    for _, linha in dados.iterrows():
+        rotulo = ax.annotate(linha["país"], (linha[xcol], linha[ycol]),
+                             xytext=(8, 8), textcoords="offset points", fontsize=9,
+                             color="darkblue", zorder=10,
+                             bbox=dict(facecolor="white", edgecolor="none", alpha=0.8,
+                                       boxstyle="round,pad=0.15"),
+                             fontweight="bold" if linha["país"] == "Brasil" else "normal",
+                             arrowprops=dict(arrowstyle="-", color="#667085", lw=0.5))
+        melhor, menor = (8, 8), float("inf")
+        for distancia in (8, 20, 34, 50, 70):
+            for dx, dy in ((distancia, distancia), (-distancia, distancia),
+                           (distancia, -distancia), (-distancia, -distancia)):
+                rotulo.set_position((dx, dy))
+                rotulo.set_ha("left" if dx > 0 else "right")
+                rotulo.update_positions(renderer)
+                # Extensão do texto sem incluir a linha que aponta para o país.
+                caixa = plt.Text.get_window_extent(rotulo, renderer).expanded(1.05, 1.15)
+                custo = sum(caixa.overlaps(outro) for outro in ocupados)
+                custo += 100 * (not ax.bbox.contains(caixa.x0, caixa.y0)
+                                or not ax.bbox.contains(caixa.x1, caixa.y1))
+                if custo < menor:
+                    melhor, menor = (dx, dy), custo
+            if menor == 0:
+                break
+        rotulo.set_position(melhor)
+        rotulo.set_ha("left" if melhor[0] > 0 else "right")
+        rotulo.update_positions(renderer)
+        ocupados.append(plt.Text.get_window_extent(rotulo, renderer).expanded(1.05, 1.15))
+    fig.text(0.50, 0.18, "Z = (valor − média dos países) / desvio-padrão populacional (ddof=0).", fontsize=10, va="top", ha="center")
+    fig.text(0.50, 0.155, "(+) Acima da média  •  (−) Abaixo da média  •  Zero: média do grupo  •  Brasil em amarelo", fontsize=10, va="top", ha="center")
+    fig.text(0.50, 0.13, "Déficit = −saldo primário. Z negativo não implica superávit nem dívida negativa, apenas que está abaixo da média.", fontsize=10, va="top", ha="center")
+    fig.text(0.50, 0.10, "Fontes: FMI (WEO / Fiscal Monitor), BIS, ABS e BCRA. Argentina: juros via TAMAR (proxy).", fontsize=9, color="dimgray", va="top", ha="center")
+    fig.text(0.70, 0.035, "Elaborado por: Fabricio Orlandin, CFP®", ha="right", fontsize=9, va="top")
+    fig.savefig(arquivo, dpi=180, facecolor="white")
+    return fig
+
+
+# %% Executar as duas análises com a mesma coleta de dados
 if __name__ == "__main__":
     df = montar_dataframe()
     df_fontes = pd.DataFrame(df.attrs["fontes_juros_inflacao"])
-    print(f"Mês comum de juros e inflação: {df.attrs['periodo_comum']}")
+    print(f"{GRUPO} — mês comum de juros e inflação: {df.attrs['periodo_comum']}")
     print(df.to_string(index=False, float_format=lambda valor: f"{valor:.2f}"))
-    fig, df_regressoes = gerar_graficos_regressao(df)
-    print(df_regressoes.to_string(index=False))
-    print("Imagem salva em juros_divida_regressoes.png")
-    # Para outro período: df = montar_dataframe(ano_referencia=2024)
-    # Apenas dados fiscais: df = montar_dataframe(incluir_juros=False)
+    if df.attrs.get("excluidos"):
+        print("\nPaíses excluídos:")
+        for pais, motivo in df.attrs["excluidos"].items():
+            print(f"- {pais}: {motivo}")
+
+    # Matriz: dívida/PIB e déficit primário normalizados; área = juro real.
+    fig_matriz = gerar_grafico_matriz(df)
+    print(f"Imagem salva em {ARQUIVO_MATRIZ}")
+
+    # Regressões: juro real versus déficit primário e versus dívida/PIB.
+    try:
+        fig_regressoes, df_regressoes = gerar_graficos_regressao(df)
+        print(df_regressoes.to_string(index=False))
+        print(f"Imagem salva em {ARQUIVO_REGRESSAO}")
+    except ValueError as erro:
+        warnings.warn(f"Regressões indisponíveis: {erro}", stacklevel=1)
+    plt.show()

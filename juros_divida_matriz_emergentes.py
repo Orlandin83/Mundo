@@ -1,9 +1,10 @@
-"""Matriz fiscal do G20 e regressões de juros reais, sem indicador composto.
+"""Matriz fiscal e regressões de juros reais dos Emergentes selecionados.
 
-Execute: python juros_divida_matriz.py
+Execute: python juros_divida_matriz_emergentes.py
+Países sem os indicadores necessários são excluídos e informados por aviso.
 A matriz usa escores Z: zero é a média dos países em cada indicador.
 
-Inflação em 12 meses e juros no último mês comum: BIS, ABS e BCRA.
+Inflação em 12 meses e juros no último mês comum: BIS e BCRA.
 
 Fontes públicas, sem chave:
 https://data.bis.org/topics/CBPOL
@@ -32,6 +33,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 
+GRUPO = "Emergentes"
+ARQUIVO_MATRIZ = "juros_divida_matriz_emergentes.png"
+ARQUIVO_REGRESSAO = "juros_divida_regressao_emergentes.png"
+
 API_URL = "https://www.imf.org/external/datamapper/api/v1"
 INDICADORES = {
     "divida_pib": "GGXWDG_NGDP",
@@ -40,26 +45,14 @@ INDICADORES = {
 # O DataMapper disponibiliza o saldo primário pelo Fiscal Monitor.
 ALTERNATIVAS = {"GGXONLB_NGDP": "GGXONLB_G01_GDP_PT"}
 ANO_REFERENCIA = datetime.now(ZoneInfo("America/Sao_Paulo")).year - 1
-g20 = {
-    "África do Sul": "ZAF",
-    "Alemanha": "DEU",
-    "Arábia Saudita": "SAU",
-    "Argentina": "ARG",
-    "Austrália": "AUS",
-    "Brasil": "BRA",
-    "Canadá": "CAN",
-    "China": "CHN",
-    "Coreia do Sul": "KOR",
-    "Estados Unidos": "USA",
-    "França": "FRA",
-    "Índia": "IND",
-    "Indonésia": "IDN",
-    "Itália": "ITA",
-    "Japão": "JPN",
-    "México": "MEX",
-    "Reino Unido": "GBR",
-    "Rússia": "RUS",
-    "Turquia": "TUR",
+# Grupo solicitado pelo usuário; não corresponde a uma classificação oficial.
+PAISES = {
+    "Brasil": "BRA", "Rússia": "RUS", "Índia": "IND", "China": "CHN",
+    "África do Sul": "ZAF", "México": "MEX", "Indonésia": "IDN",
+    "Coreia do Sul": "KOR", "Turquia": "TUR", "Taiwan": "TWN",
+    "Singapura": "SGP", "Hong Kong": "HKG", "Vietnã": "VNM",
+    "Tailândia": "THA", "Malásia": "MYS", "Filipinas": "PHL",
+    "Argentina": "ARG", "Colômbia": "COL", "Chile": "CHL", "Uruguai": "URY",
 }
 
 
@@ -72,12 +65,17 @@ ISO2 = {
     "BRA": "BR", "CAN": "CA", "CHN": "CN", "KOR": "KR", "USA": "US",
     "FRA": "FR", "IND": "IN", "IDN": "ID", "ITA": "IT", "JPN": "JP",
     "MEX": "MX", "GBR": "GB", "RUS": "RU", "TUR": "TR",
+    "TWN": "TW", "SGP": "SG", "HKG": "HK", "VNM": "VN",
+    "THA": "TH", "MYS": "MY", "PHL": "PH", "COL": "CO",
+    "CHL": "CL", "URY": "UY",
 }
 EURO = {"DEU", "FRA", "ITA"}
 
 
 def ler_csv(sessao, url, **params):
     resposta = sessao.get(url, params=params, timeout=60)
+    if resposta.status_code in (204, 404):
+        return pd.DataFrame(columns=["REF_AREA", "TIME_PERIOD", "OBS_VALUE"])
     resposta.raise_for_status()
     tabela = pd.read_csv(StringIO(resposta.text), dtype={"REF_AREA": str})
     obrigatorias = {"TIME_PERIOD", "OBS_VALUE"}
@@ -174,29 +172,34 @@ def consultar_juros_inflacao(paises):
             )
         tamar = None
         if "ARG" in paises.values():
-            resposta = sessao.get(BCRA_URL, params={"IdVariable": 45}, timeout=60)
-            resposta.raise_for_status()
-            cadastro = next((v for v in resposta.json().get("results", [])
-                             if v["idVariable"] == 45), None)
-            if cadastro is None or "efectivo anual" not in cadastro["unidadExpresion"].lower():
-                raise ValueError("BCRA não retornou a TAMAR efetiva anual esperada (45).")
-            registros, offset = [], 0
-            while True:
-                resposta = sessao.get(f"{BCRA_URL}/45", params={
-                    "desde": inicio + "-01", "hasta": hoje.date().isoformat(),
-                    "limit": 1000, "offset": offset,
-                }, timeout=60)
+            try:
+                resposta = sessao.get(BCRA_URL, params={"IdVariable": 45}, timeout=60)
                 resposta.raise_for_status()
-                pagina = resposta.json()
-                detalhes = [obs for serie in pagina.get("results", [])
-                            if serie["idVariable"] == 45 for obs in serie["detalle"]]
-                registros.extend(detalhes)
-                offset += len(detalhes)
-                if not detalhes or offset >= pagina["metadata"]["resultset"]["count"]:
-                    break
-            tamar = pd.DataFrame(registros, columns=["fecha", "valor"]).rename(
-                columns={"fecha": "TIME_PERIOD", "valor": "OBS_VALUE"}
-            )
+                cadastro = next((v for v in resposta.json().get("results", [])
+                                 if v["idVariable"] == 45), None)
+                if cadastro is None or "efectivo anual" not in cadastro["unidadExpresion"].lower():
+                    raise ValueError("BCRA não retornou a TAMAR efetiva anual esperada (45).")
+                registros, offset = [], 0
+                while True:
+                    resposta = sessao.get(f"{BCRA_URL}/45", params={
+                        "desde": inicio + "-01", "hasta": hoje.date().isoformat(),
+                        "limit": 1000, "offset": offset,
+                    }, timeout=60)
+                    resposta.raise_for_status()
+                    pagina = resposta.json()
+                    detalhes = [obs for serie in pagina.get("results", [])
+                                if serie["idVariable"] == 45 for obs in serie["detalle"]]
+                    registros.extend(detalhes)
+                    offset += len(detalhes)
+                    if not detalhes or offset >= pagina["metadata"]["resultset"]["count"]:
+                        break
+                tamar = pd.DataFrame(registros, columns=["fecha", "valor"]).rename(
+                    columns={"fecha": "TIME_PERIOD", "valor": "OBS_VALUE"}
+                )
+            except (requests.RequestException, ValueError, KeyError) as erro:
+                warnings.warn(f"Argentina: fonte de juros indisponível: {erro}", stacklevel=2)
+                tamar = pd.DataFrame(columns=["TIME_PERIOD", "OBS_VALUE"])
+
 
     series_cpi, series_juros = {}, {}
     for iso in paises.values():
@@ -209,7 +212,28 @@ def consultar_juros_inflacao(paises):
             tamar if iso == "ARG" else juros.loc[juros["REF_AREA"] == area_juros],
             hoje, diaria=iso == "ARG",
         )
-    mes = ultimo_mes_comum(list(series_cpi.values()) + list(series_juros.values()))
+    meses_validos = {
+        iso: set(series_cpi[iso].index[series_cpi[iso]["OBS_VALUE"].gt(-100)
+                                     & np.isfinite(series_cpi[iso]["OBS_VALUE"])])
+        & set(series_juros[iso].index[np.isfinite(series_juros[iso]["OBS_VALUE"])])
+        for iso in paises.values()
+    }
+    cobertura = {}
+    for meses in meses_validos.values():
+        for mes in meses:
+            cobertura[mes] = cobertura.get(mes, 0) + 1
+    if not cobertura:
+        raise ValueError("Nenhum país com inflação e juros disponíveis no mesmo mês.")
+    # Maior cobertura; em caso de empate, o mês mais recente.
+    # Se houver interseção de todos os países válidos, ela tem prioridade natural.
+    mes = max(cobertura, key=lambda periodo: (cobertura[periodo], periodo))
+    excluidos = {}
+    for pais, iso in paises.items():
+        if mes not in meses_validos[iso]:
+            motivo = f"sem inflação e juros válidos no mês comum ({mes})"
+            excluidos[pais] = motivo
+            warnings.warn(f"Excluído: {pais} — {motivo}.", stacklevel=2)
+    paises = {pais: iso for pais, iso in paises.items() if pais not in excluidos}
     if (hoje.to_period("M") - mes).n > 3:
         warnings.warn(f"O último mês comum está defasado: {mes}.", stacklevel=2)
 
@@ -237,6 +261,7 @@ def consultar_juros_inflacao(paises):
             "status": "mesmo mês; juros de fim de período",
         })
     resultado = pd.DataFrame(valores)
+    resultado.attrs["excluidos"] = excluidos
     resultado.attrs["periodo_comum"] = str(mes)
     return resultado, pd.DataFrame(fontes)
 
@@ -301,7 +326,7 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
             # Reindexar impede que anos extras ou agregados entrem na média.
             series[nome] = (
                 pd.DataFrame.from_dict(valores, orient="index")
-                .reindex(index=list(g20.values()), columns=anos)
+                .reindex(index=list(PAISES.values()), columns=anos)
                 .apply(pd.to_numeric, errors="coerce")
             )
             fontes[nome] = {
@@ -312,14 +337,22 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
 
     saldo = series["saldo_primario_pib"]
     resultado = pd.DataFrame({
-        "pais": pd.Series({iso: pais for pais, iso in g20.items()}),
+        "pais": pd.Series({iso: pais for pais, iso in PAISES.items()}),
         "divida_pib": series["divida_pib"][str(ano_referencia)],
         "media_deficit_primario_pib": -saldo.mean(axis=1),
-    }).reindex(list(g20.values())).reset_index(drop=True)
-    resultado["z_divida_pib"] = normalizar_z(resultado["divida_pib"])
-    resultado["z_deficit_primario"] = normalizar_z(
-        resultado["media_deficit_primario_pib"]
-    )
+    }).reindex(list(PAISES.values())).reset_index(drop=True)
+    colunas_fiscais = ["divida_pib", "media_deficit_primario_pib"]
+    resultado[colunas_fiscais] = resultado[colunas_fiscais].replace([np.inf, -np.inf], np.nan)
+    ausentes = resultado[colunas_fiscais].isna().any(axis=1)
+    excluidos = {}
+    for pais in resultado.loc[ausentes, "pais"]:
+        motivo = "sem dívida no ano de referência ou saldo primário na janela de dez anos"
+        excluidos[pais] = motivo
+        warnings.warn(f"Excluído: {pais} — {motivo}.", stacklevel=2)
+    resultado = resultado.loc[~ausentes].copy()
+    if resultado.empty:
+        raise ValueError("Nenhum país com dados fiscais suficientes.")
+    resultado.attrs["excluidos"] = excluidos
     resultado.attrs["fontes"] = fontes
     resultado.attrs["ano_fiscal"] = ano_referencia
     resultado.attrs["unidades"] = {
@@ -329,10 +362,13 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
         "z_deficit_primario": "adimensional",
     }
     if incluir_juros:
-        dados_juros, fontes_juros = consultar_juros_inflacao(g20)
+        paises_validos = {pais: iso for pais, iso in PAISES.items()
+                          if pais in set(resultado["pais"])}
+        dados_juros, fontes_juros = consultar_juros_inflacao(paises_validos)
         metadados = resultado.attrs.copy()
-        resultado = resultado.merge(dados_juros, on="pais", how="left", validate="one_to_one")
+        resultado = resultado.merge(dados_juros, on="pais", how="inner", validate="one_to_one")
         resultado.attrs = metadados
+        resultado.attrs["excluidos"].update(dados_juros.attrs["excluidos"])
         resultado.attrs["fontes_juros_inflacao"] = fontes_juros.to_dict("records")
         resultado.attrs["periodo_comum"] = dados_juros.attrs["periodo_comum"]
         resultado.attrs["unidades"].update({
@@ -340,6 +376,9 @@ def montar_dataframe(ano_referencia=ANO_REFERENCIA, incluir_juros=True):
             "juros_nominais": "% a.a., convenção da fonte",
             "juro_real_ex_post": "% a.a., aproximação com inflação passada",
         })
+    # A média e o desvio devem representar apenas a amostra final.
+    resultado["z_divida_pib"] = normalizar_z(resultado["divida_pib"])
+    resultado["z_deficit_primario"] = normalizar_z(resultado["media_deficit_primario_pib"])
     colunas = {
         "pais": "país",
         "media_deficit_primario_pib": "déficit primário (média)",
@@ -368,7 +407,7 @@ def gerar_graficos_regressao(df, arquivo=None):
     from matplotlib.transforms import Bbox
 
     if arquivo is None:
-        arquivo = Path(__file__).with_name("juros_divida_matriz_regressoes.png")
+        arquivo = Path(__file__).with_name(ARQUIVO_REGRESSAO)
     paineis = [
         ("déficit primário (média)", "Juro real × déficit primário médio", "Déficit primário médio (% do PIB)"),
         ("dívida/pib", "Juro real × dívida / PIB", "Dívida / PIB (%)"),
@@ -377,7 +416,7 @@ def gerar_graficos_regressao(df, arquivo=None):
     fig.subplots_adjust(left=0.075, right=0.77, bottom=0.17, top=0.87, hspace=0.65)
     periodo = df.attrs.get("periodo_comum", "não informado")
     ano = df.attrs.get("ano_fiscal", ANO_REFERENCIA)
-    fig.suptitle("Juro real, dívida e déficit primário | G20", x=0.075, y=0.97,
+    fig.suptitle(f"Juros_Dívida Regressão {GRUPO}", x=0.075, y=0.97,
                  ha="left", fontsize=22, fontweight="bold", color="darkblue")
     fig.text(0.075, 0.935,
              f"Juros e inflação: {periodo}  •  Dívida/PIB: {ano}  •  Déficit médio: {ano - 9}–{ano}",
@@ -443,14 +482,14 @@ def gerar_graficos_regressao(df, arquivo=None):
             anotacao.set_ha("left" if melhor[0] > 0 else "right")
             ocupados.append(anotacao.get_window_extent(renderer).expanded(1.05, 1.15))
 
-    fig.text(0.075, 0.105, "Fonte: FMI (WEO / Fiscal Monitor), BIS, ABS e BCRA.", fontsize=9)
+    fig.text(0.075, 0.105, "Fonte: FMI (WEO / Fiscal Monitor), BIS e BCRA.", fontsize=9)
     fig.text(0.80, 0.105, "Elaborado por: Fabricio Orlandin, CFP®", ha="right", fontsize=9)
     fig.text(0.075, 0.079,
              "Argentina: usa TAMAR privada efetiva anual como proxy dos juros, em lugar da taxa básica; aplica-se a mesma fórmula de juro real.", fontsize=9)
     fig.text(0.075, 0.053,
              "Déficit primário médio: média dos anos disponíveis na janela de dez anos; déficit = −saldo primário.", fontsize=9)
     fig.text(0.075, 0.027,
-             "Juro real = 100 × [(1 + juros/100) / (1 + inflação em 12 meses/100) − 1]. Regressões descritivas entre países, incluindo a Argentina.",
+             "Juro real = 100 × [(1 + juros/100) / (1 + inflação em 12 meses/100) − 1]. Regressões descritivas entre países, conforme disponibilidade.",
              fontsize=9, color="dimgray")
     fig.savefig(arquivo, dpi=180, facecolor="white")
     return fig, pd.DataFrame(estatisticas)
@@ -479,7 +518,7 @@ def gerar_grafico_matriz(df, arquivo=None):
     from matplotlib.transforms import Bbox
     from matplotlib.patches import Rectangle
 
-    arquivo = arquivo or Path(__file__).with_name("juros_divida_matriz.png")
+    arquivo = arquivo or Path(__file__).with_name(ARQUIVO_MATRIZ)
     xcol, ycol = "z_divida_pib", "z_deficit_primario"
     dados = df[["país", xcol, ycol]].replace([np.inf, -np.inf], np.nan).dropna()
     dados["juro real"] = pd.to_numeric(
@@ -495,7 +534,7 @@ def gerar_grafico_matriz(df, arquivo=None):
     fig, ax = plt.subplots(figsize=(14, 14), layout="none")
     fig.subplots_adjust(left=0.10, right=0.94, bottom=0.29, top=0.80)
     ano = df.attrs.get("ano_fiscal", ANO_REFERENCIA)
-    fig.suptitle("Matriz fiscal | G20", x=0.10, y=0.975, ha="left", va="top",
+    fig.suptitle(f"Juros_Dívida Matriz {GRUPO}", x=0.10, y=0.975, ha="left", va="top",
                  fontsize=23, fontweight="bold", color="darkblue")
     fig.text(0.10, 0.925,
              f"Dívida/PIB: {ano}  •  Déficit primário médio: {ano - 9}–{ano}  •  {len(dados)} países",
@@ -578,35 +617,32 @@ def gerar_grafico_matriz(df, arquivo=None):
     fig.text(0.50, 0.18, "Z = (valor − média dos países) / desvio-padrão populacional (ddof=0).", fontsize=10, va="top", ha="center")
     fig.text(0.50, 0.155, "(+) Acima da média  •  (−) Abaixo da média  •  Zero: média do grupo  •  Brasil em amarelo", fontsize=10, va="top", ha="center")
     fig.text(0.50, 0.13, "Déficit = −saldo primário. Z negativo não implica superávit nem dívida negativa, apenas que está abaixo da média.", fontsize=10, va="top", ha="center")
-    fig.text(0.50, 0.10, "Fontes: FMI (WEO / Fiscal Monitor), BIS, ABS e BCRA. Argentina: juros via TAMAR (proxy).", fontsize=9, color="dimgray", va="top", ha="center")
+    fig.text(0.50, 0.10, "Fontes: FMI (WEO / Fiscal Monitor), BIS e BCRA. Argentina: juros via TAMAR (proxy).", fontsize=9, color="dimgray", va="top", ha="center")
     fig.text(0.70, 0.035, "Elaborado por: Fabricio Orlandin, CFP®", ha="right", fontsize=9, va="top")
     fig.savefig(arquivo, dpi=180, facecolor="white")
     return fig
 
 
-# %% Executar (também disponível como célula no editor)
+# %% Executar as duas análises com a mesma coleta de dados
 if __name__ == "__main__":
-    # Se os juros falharem, mantém os países na matriz com marcadores em X.
-    df = montar_dataframe(incluir_juros=False)
-    print(df.drop(columns="juro real").to_string(index=False, float_format=lambda valor: f"{valor:.2f}"))
+    df = montar_dataframe()
+    df_fontes = pd.DataFrame(df.attrs["fontes_juros_inflacao"])
+    print(f"{GRUPO} — mês comum de juros e inflação: {df.attrs['periodo_comum']}")
+    print(df.to_string(index=False, float_format=lambda valor: f"{valor:.2f}"))
+    if df.attrs.get("excluidos"):
+        print("\nPaíses excluídos:")
+        for pais, motivo in df.attrs["excluidos"].items():
+            print(f"- {pais}: {motivo}")
+
+    # Matriz: dívida/PIB e déficit primário normalizados; área = juro real.
+    fig_matriz = gerar_grafico_matriz(df)
+    print(f"Imagem salva em {ARQUIVO_MATRIZ}")
+
+    # Regressões: juro real versus déficit primário e versus dívida/PIB.
     try:
-        dados_juros, df_fontes = consultar_juros_inflacao(g20)
-        metadados = df.attrs.copy()
-        df = df.drop(columns="juro real").merge(
-            dados_juros[["pais", "juro_real_ex_post"]].rename(
-                columns={"pais": "país", "juro_real_ex_post": "juro real"}),
-            on="país", how="left", validate="one_to_one",
-        )
-        df.attrs = metadados
-        df.attrs["periodo_comum"] = dados_juros.attrs["periodo_comum"]
-        df.attrs["fontes_juros_inflacao"] = df_fontes.to_dict("records")
         fig_regressoes, df_regressoes = gerar_graficos_regressao(df)
         print(df_regressoes.to_string(index=False))
-        print("Imagem salva em juros_divida_matriz_regressoes.png")
-    except (requests.RequestException, ValueError, KeyError) as erro:
-        warnings.warn(f"Consulta de juros ou regressões indisponíveis: {erro}", stacklevel=1)
-    fig_matriz = gerar_grafico_matriz(df)
-    print("Imagem salva em juros_divida_matriz.png")
+        print(f"Imagem salva em {ARQUIVO_REGRESSAO}")
+    except ValueError as erro:
+        warnings.warn(f"Regressões indisponíveis: {erro}", stacklevel=1)
     plt.show()
-
-
